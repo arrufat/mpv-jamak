@@ -354,6 +354,10 @@ local function search(hash, title, languages)
                 feature_id = fd.feature_id,
                 feature_title = fd.title,
                 feature_year = fd.year,
+                feature_type = fd.feature_type,
+                parent_title = fd.parent_title,
+                season = tonumber(fd.season_number),
+                episode = tonumber(fd.episode_number),
             }
         end
     end
@@ -420,8 +424,16 @@ local function pick(cands)
             .. (c.hi and " [HI]" or "") .. (c.ai and " [AI]" or "")
         local feature = ""
         if feature_count > 1 and c.feature_title then
-            feature = c.feature_title
-                .. (c.feature_year and (" (" .. c.feature_year .. ")") or "") .. ": "
+            if c.feature_type == "Episode" and c.parent_title then
+                -- Show (S01E11) Episode Title:
+                local code = c.season and c.episode
+                    and string.format(" (S%02dE%02d)", c.season, c.episode)
+                    or c.episode and string.format(" (E%02d)", c.episode) or ""
+                feature = c.parent_title .. code .. " " .. c.feature_title .. ": "
+            else
+                feature = c.feature_title
+                    .. (c.feature_year and (" (" .. c.feature_year .. ")") or "") .. ": "
+            end
         end
         local fps = c.fps and string.format(", %gfps", c.fps) or ""
         items[i] = string.format("%s %s%s (%d dl%s)", tags, feature, c.release, c.dl, fps)
