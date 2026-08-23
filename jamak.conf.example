@@ -24,5 +24,5 @@ auto=no
 subliminal_fallback=yes
 
 # Where to save subtitles when the video's directory is unwritable
-# (empty = ~/.cache/jamak/subs, or %LOCALAPPDATA%\jamak\subs on Windows)
+# (empty = the jamak folder in mpv's cache directory, e.g. ~/.cache/mpv/jamak/subs)
 fallback_dir=

@@ -1,13 +1,9 @@
--- jamak — subtitle downloader for mpv using the OpenSubtitles.com REST API.
--- Pure Lua + curl; optional subliminal fallback when the API finds nothing.
+-- jamak: subtitle downloader for mpv using the OpenSubtitles.com REST API.
 --
--- Keys:  Ctrl+u  search (re-press to re-show results without re-querying)
---        Ctrl+U  manual search: editable title prompt, then language picker
---                (drops cached results)
+-- Keys:  Ctrl+u  search, or reopen cached results
+--        Ctrl+U  manual search: title prompt, then language picker
 --
 -- Credentials go in script-opts/jamak.conf (see jamak.conf.example).
--- Optional auto mode (auto=yes): on file load, files with no subtitle track
--- get an automatic download when a moviehash match exists.
 
 local mp = require "mp"
 local utils = require "mp.utils"
@@ -18,14 +14,9 @@ local o = {
     api_key = "",
     username = "",
     password = "",
-    -- comma-separated, priority order (2-letter codes)
     languages = "en",
-    -- on file load, if the file has no subtitle track: auto-download when
-    -- there is an exact moviehash match, otherwise just hint that results exist
     auto = false,
-    -- run subliminal when the API returns zero results
     subliminal_fallback = true,
-    -- where to save subs when the video dir is unwritable (empty = cache dir)
     fallback_dir = "",
 }
 require("mp.options").read_options(o, "jamak")
@@ -33,15 +24,7 @@ require("mp.options").read_options(o, "jamak")
 local API = "https://api.opensubtitles.com/api/v1"
 local UA = "jamak v0.1"
 local TOKEN_MAX_AGE = 20 * 3600
-
-local lang_prio = {}
-do
-    local i = 0
-    for l in o.languages:gmatch("[^,%s]+") do
-        i = i + 1
-        lang_prio[l:lower()] = i
-    end
-end
+local PLATFORM = mp.get_property_native("platform") or "linux"
 
 -- ---------------------------------------------------------------- helpers
 
@@ -49,11 +32,21 @@ local function osd(text, dur)
     mp.osd_message("jamak: " .. text, dur or 3)
 end
 
--- the API 301s non-canonical URLs: spaces must be "+", not "%20"
+-- the API 301-redirects non-canonical URLs: spaces must be "+", not "%20"
 local function urlencode(s)
     return (s:gsub("[^%w%-%._~ ]", function(c)
         return string.format("%%%02X", c:byte())
     end):gsub(" ", "+"))
+end
+
+local function first_line(s)
+    return (s or ""):match("[^\n]+")
+end
+
+local function split_langs(s)
+    local langs = {}
+    for l in s:gmatch("[^,%s]+") do langs[#langs + 1] = l:lower() end
+    return langs
 end
 
 local function read_file(path)
@@ -72,62 +65,60 @@ local function write_file(path, s)
     return true
 end
 
-local PLATFORM = mp.get_property_native("platform") or "linux"
-
-local cache_dir_made = false
-local function cache_dir()
-    local base
-    if PLATFORM == "windows" then
-        base = os.getenv("LOCALAPPDATA")
-            or utils.join_path(os.getenv("USERPROFILE") or ".", "AppData/Local")
-    else
-        base = os.getenv("XDG_CACHE_HOME")
-            or utils.join_path(os.getenv("HOME") or "/tmp", ".cache")
-    end
-    local dir = utils.join_path(base, "jamak")
-    if not cache_dir_made then
-        local subs = utils.join_path(dir, "subs")
-        -- cmd's mkdir has no -p but creates intermediate dirs by default;
-        -- it wants backslashes and errors harmlessly if the dir exists
+local ensured_dirs = {}
+local function ensure_dir(dir)
+    if not ensured_dirs[dir] then
+        -- cmd's mkdir has no -p but creates parents by default; it wants
+        -- backslashes and errors harmlessly if the dir already exists
         local args = PLATFORM == "windows"
-            and { "cmd", "/d", "/c", "mkdir", (subs:gsub("/", "\\")) }
-            or { "mkdir", "-p", subs }
+            and { "cmd", "/d", "/c", "mkdir", (dir:gsub("/", "\\")) }
+            or { "mkdir", "-p", dir }
         mp.command_native({ name = "subprocess", args = args,
                             playback_only = false, capture_stderr = true })
-        cache_dir_made = true
+        ensured_dirs[dir] = true
     end
     return dir
 end
 
--- ------------------------------------------------------- coroutine plumbing
--- Async calls read linearly: `local res = await(fn, ...)` where fn takes a
--- final callback argument. Callbacks fire on mpv's main event loop.
+local cache_dir_cached
+local function cache_dir()
+    if not cache_dir_cached then
+        local dir = mp.command_native({ "expand-path", "~~cache/jamak" })
+        if not dir or not dir:find("[/\\]") then
+            -- under --no-config mpv has no cache dir and returns "jamak"
+            dir = utils.join_path(os.getenv("XDG_CACHE_HOME")
+                or os.getenv("LOCALAPPDATA") or os.getenv("TMPDIR") or "/tmp", "jamak")
+        end
+        cache_dir_cached = ensure_dir(dir)
+    end
+    return cache_dir_cached
+end
 
-local function run(fn)
-    local co = coroutine.create(fn)
-    local ok, err = coroutine.resume(co)
+-- ------------------------------------------------------- coroutine plumbing
+
+local function resume(co, ...)
+    local ok, err = coroutine.resume(co, ...)
     if not ok then
         msg.error(debug.traceback(co, err))
         osd("internal error (see console)", 4)
     end
 end
 
-local function await(fn, ...)
+local function run(fn)
+    resume(coroutine.create(fn))
+end
+
+-- await(fn): fn gets a callback; the coroutine suspends until it fires
+local function await(fn)
     local co = coroutine.running()
     local early
-    local args = { ... }
-    args[#args + 1] = function(...)
+    fn(function(...)
         if coroutine.status(co) == "suspended" then
-            local ok, err = coroutine.resume(co, ...)
-            if not ok then
-                msg.error(debug.traceback(co, err))
-                osd("internal error (see console)", 4)
-            end
+            resume(co, ...)
         else
             early = { ... }
         end
-    end
-    fn(unpack(args))
+    end)
     if early then return unpack(early) end
     return coroutine.yield()
 end
@@ -143,6 +134,13 @@ local function subprocess(args)
 end
 
 -- --------------------------------------------------------------- HTTP layer
+
+-- params must be sorted or the API 301-redirects to its canonical URL form
+local function api_url(path, params)
+    if not params or #params == 0 then return API .. path end
+    table.sort(params)
+    return API .. path .. "?" .. table.concat(params, "&")
+end
 
 -- req = {url, method?, token?, body?}  ->  {code, body (parsed), raw}, err
 local function api_request(req)
@@ -174,29 +172,30 @@ local function api_request(req)
     local res, err = subprocess(args)
     if not res then return nil, err end
     if res.status ~= 0 then
-        local detail = (res.stderr or ""):match("[^\n]+") or ("curl exit " .. res.status)
-        return nil, "network error: " .. detail
+        return nil, "network error: "
+            .. (first_line(res.stderr) or ("curl exit " .. res.status))
     end
     local body, code = res.stdout:match("^(.*)\n(%d+)%s*$")
     if not code then return nil, "unexpected curl output" end
-    return { code = tonumber(code),
+    code = tonumber(code)
+    if code == 429 then return nil, "rate limited by OpenSubtitles, retry in a minute" end
+    return { code = code,
              body = body ~= "" and utils.parse_json(body) or nil,
              raw = body }
+end
+
+local function api_error(what, resp)
+    return what .. ": " .. ((resp.body and resp.body.message) or ("HTTP " .. resp.code))
 end
 
 -- ------------------------------------------------------------ token manager
 
 local token_cache
 
-local function token_path()
-    return utils.join_path(cache_dir(), "token.json")
-end
-
 local function get_token(force)
     if not force then
         if not token_cache then
-            local raw = read_file(token_path())
-            token_cache = raw and utils.parse_json(raw) or nil
+            token_cache = utils.parse_json(read_file(utils.join_path(cache_dir(), "token.json")) or "")
         end
         if token_cache and token_cache.token
             and os.time() - (token_cache.created or 0) < TOKEN_MAX_AGE then
@@ -204,22 +203,21 @@ local function get_token(force)
         end
     end
     if o.username == "" or o.password == "" then
-        return nil, "no credentials — fill in script-opts/jamak.conf"
+        return nil, "no credentials, fill in script-opts/jamak.conf"
     end
     local resp, err = api_request({
         method = "POST",
-        url = API .. "/login",
+        url = api_url("/login"),
         body = utils.format_json({ username = o.username, password = o.password }),
     })
     if not resp then return nil, err end
     if resp.code == 401 then return nil, "bad credentials (check script-opts/jamak.conf)" end
-    if resp.code == 429 then return nil, "rate limited by OpenSubtitles, try again in a minute" end
     if resp.code ~= 200 or not resp.body or not resp.body.token then
-        return nil, "login failed (HTTP " .. resp.code .. ")"
+        return nil, api_error("login failed", resp)
     end
     token_cache = { token = resp.body.token, created = os.time(),
                     base_url = resp.body.base_url }
-    write_file(token_path(), utils.format_json(token_cache))
+    write_file(utils.join_path(cache_dir(), "token.json"), utils.format_json(token_cache))
     return token_cache.token
 end
 
@@ -233,32 +231,25 @@ local function download_base()
     return API
 end
 
+-- retries once with a fresh token on 401
+local function authed_request(build)
+    for _, force in ipairs({ false, true }) do
+        local token, terr = get_token(force)
+        if not token then return nil, terr end
+        local req = build()
+        req.token = token
+        local resp, err = api_request(req)
+        if not resp then return nil, err end
+        if resp.code ~= 401 then return resp end
+    end
+    return nil, "authentication failed (401)"
+end
+
 -- ------------------------------------------------------------------- oshash
--- filesize + first/last 64 KiB summed as little-endian u64 mod 2^64,
--- done in four 16-bit lanes so everything stays well inside double precision.
+-- OpenSubtitles moviehash: filesize + first/last 64 KiB summed as LE u64
+-- mod 2^64, in four 16-bit lanes (sums stay below 2^53; carries once at end)
 
 local CHUNK = 65536
-
-local function add64_bytes(acc, chunk, pos)
-    local b1, b2, b3, b4, b5, b6, b7, b8 = chunk:byte(pos, pos + 7)
-    local w = { b1 + b2 * 256, b3 + b4 * 256, b5 + b6 * 256, b7 + b8 * 256 }
-    local c = 0
-    for i = 1, 4 do
-        local s = acc[i] + w[i] + c
-        acc[i] = s % 65536
-        c = math.floor(s / 65536)
-    end
-end
-
-local function add64_number(acc, n)
-    local c = 0
-    for i = 1, 4 do
-        local s = acc[i] + n % 65536 + c
-        n = math.floor(n / 65536)
-        acc[i] = s % 65536
-        c = math.floor(s / 65536)
-    end
-end
 
 local function oshash(path)
     local f = io.open(path, "rb")
@@ -268,8 +259,7 @@ local function oshash(path)
         f:close()
         return nil, "file too small for hash"
     end
-    local acc = { 0, 0, 0, 0 }
-    add64_number(acc, size)
+    local a1, a2, a3, a4 = 0, 0, 0, 0
     for _, off in ipairs({ 0, size - CHUNK }) do
         f:seek("set", off)
         local chunk = f:read(CHUNK)
@@ -278,29 +268,42 @@ local function oshash(path)
             return nil, "read error"
         end
         for i = 1, CHUNK, 8 do
-            add64_bytes(acc, chunk, i)
+            local b1, b2, b3, b4, b5, b6, b7, b8 = chunk:byte(i, i + 7)
+            a1 = a1 + b1 + b2 * 256
+            a2 = a2 + b3 + b4 * 256
+            a3 = a3 + b5 + b6 * 256
+            a4 = a4 + b7 + b8 * 256
         end
     end
     f:close()
-    return string.format("%04x%04x%04x%04x", acc[4], acc[3], acc[2], acc[1])
+    a1 = a1 + size % 65536
+    a2 = a2 + math.floor(size / 65536) % 65536
+    a3 = a3 + math.floor(size / 2 ^ 32) % 65536
+    a4 = a4 + math.floor(size / 2 ^ 48)
+    a2 = a2 + math.floor(a1 / 65536)
+    a3 = a3 + math.floor(a2 / 65536)
+    a4 = a4 + math.floor(a3 / 65536)
+    return string.format("%04x%04x%04x%04x",
+        a4 % 65536, a3 % 65536, a2 % 65536, a1 % 65536)
 end
 
 -- -------------------------------------------------------------- title guess
 
 local NOISE = {
-    "%f[%w]%d%d%d+[pi]%f[%W]",                    -- 720p 1080p 2160p 480i
+    "%f[%w]%d%d%d+[pi]%f[%W]",                    -- 720p, 1080p, 480i
     "%f[%w][12][90]%d%d%f[%W]",                   -- year
     "%f[%w][Ww][Ee][Bb]%-?[Dd]?[Ll]?%f[%W]",
     "%f[%w][Bb][Ll][Uu]%-?[Rr][Aa][Yy]%f[%W]",
-    "%f[%w][Bb][DdRr][Rr][Ii][Pp]%f[%W]",         -- BDRip / BRRip
+    "%f[%w][Bb][DdRr][Rr][Ii][Pp]%f[%W]",         -- BDRip, BRRip
     "%f[%w][Hh][Dd][Tt][Vv]%f[%W]",
     "%f[%w][XxHh]26[45]%f[%W]",
     "%f[%w][Hh][Ee][Vv][Cc]%f[%W]",
     "%f[%w][Aa][Aa][Cc]%f[%W]",
 }
 
+-- expects a name without file extension
 local function guess_title(name)
-    local t = name:gsub("%.[^.]*$", ""):gsub("[%._]+", " ")
+    local t = name:gsub("[%._]+", " ")
     local cut = #t + 1
     for _, pat in ipairs(NOISE) do
         local pos = t:find(pat)
@@ -315,25 +318,21 @@ end
 -- ---------------------------------------------------------- search & ranking
 
 local function search(hash, title, languages)
-    local langs = {}
-    for l in (languages or o.languages):gmatch("[^,%s]+") do langs[#langs + 1] = l:lower() end
-    table.sort(langs)
-    -- only non-default params: the API 301s away order_by=download_count etc.
-    local params = {
-        "languages=" .. urlencode(table.concat(langs, ",")),
-    }
+    local langs = split_langs(languages or o.languages)
+    local prio = {}
+    for i, l in ipairs(langs) do prio[l] = i end
+    local sorted = { unpack(langs) }
+    table.sort(sorted)
+
+    local params = { "languages=" .. urlencode(table.concat(sorted, ",")) }
     if hash then params[#params + 1] = "moviehash=" .. hash end
     if title and title ~= "" then params[#params + 1] = "query=" .. urlencode(title:lower()) end
-    table.sort(params)
-
-    local url = API .. "/subtitles?" .. table.concat(params, "&")
+    local url = api_url("/subtitles", params)
     msg.verbose("GET " .. url)
     local resp, err = api_request({ url = url })
     if not resp then return nil, err end
-    if resp.code == 429 then return nil, "rate limited, wait a moment and retry" end
     if resp.code ~= 200 or not resp.body or type(resp.body.data) ~= "table" then
-        local m = resp.body and resp.body.message
-        return nil, "search failed: " .. (m or ("HTTP " .. resp.code))
+        return nil, api_error("search failed", resp)
     end
 
     local cands = {}
@@ -353,8 +352,7 @@ local function search(hash, title, languages)
     end
     table.sort(cands, function(x, y)
         if x.hash_match ~= y.hash_match then return x.hash_match end
-        local px = lang_prio[x.lang] or 99
-        local py = lang_prio[y.lang] or 99
+        local px, py = prio[x.lang] or 99, prio[y.lang] or 99
         if px ~= py then return px < py end
         return x.dl > y.dl
     end)
@@ -364,27 +362,36 @@ end
 
 -- ------------------------------------------------------------ language list
 
-local lang_list
+local lang_list, lang_waiters
 
--- full language list from the API, cached in memory and on disk (it never
--- really changes); nil if the API is unreachable and no cache exists
+-- full language list from the API, cached in memory and on disk;
+-- concurrent callers wait for the fetch already in flight
 local function get_languages()
     if lang_list then return lang_list end
+    if lang_waiters then
+        lang_waiters[#lang_waiters + 1] = coroutine.running()
+        coroutine.yield()
+        return lang_list
+    end
+    lang_waiters = {}
     local path = utils.join_path(cache_dir(), "languages.json")
-    local raw = read_file(path)
-    local parsed = raw and utils.parse_json(raw) or nil
+    local parsed = utils.parse_json(read_file(path) or "")
     if type(parsed) ~= "table" or #parsed == 0 then
-        local resp = api_request({ url = API .. "/infos/languages" })
+        local resp = api_request({ url = api_url("/infos/languages") })
         if resp and resp.code == 200 and resp.body and type(resp.body.data) == "table" then
             parsed = resp.body.data
             write_file(path, utils.format_json(parsed))
         end
     end
-    if type(parsed) ~= "table" or #parsed == 0 then return nil end
-    table.sort(parsed, function(a, b)
-        return (a.language_name or "") < (b.language_name or "")
-    end)
-    lang_list = parsed
+    if type(parsed) == "table" and #parsed > 0 then
+        table.sort(parsed, function(a, b)
+            return (a.language_name or "") < (b.language_name or "")
+        end)
+        lang_list = parsed
+    end
+    local waiting = lang_waiters
+    lang_waiters = nil
+    for _, co in ipairs(waiting) do resume(co) end
     return lang_list
 end
 
@@ -399,7 +406,7 @@ local function pick(cands)
     local idx = await(function(cb)
         input.select({ prompt = "Subtitle:", items = items, submit = cb })
     end)
-    return idx and cands[idx] or nil
+    return idx and cands[idx]
 end
 
 local function ask_title(default)
@@ -420,8 +427,7 @@ local function ask_title(default)
     end)
 end
 
--- language picker: configured default first, then every API language
--- (type to fuzzy-filter). Returns a languages string for search(), nil = cancel.
+-- returns a languages string for search(), nil on cancel
 local function ask_language()
     local items = { "configured (" .. o.languages .. ")" }
     local codes = { o.languages }
@@ -435,7 +441,7 @@ local function ask_language()
     local idx = await(function(cb)
         input.select({ prompt = "Language:", items = items, submit = cb })
     end)
-    return idx and codes[idx] or nil
+    return idx and codes[idx]
 end
 
 -- ---------------------------------------------------------------- download
@@ -453,33 +459,23 @@ local function sub_dest_dir(video_path, remote)
     if not remote then
         local dir = utils.split_path(video_path)
         if writable(dir) then return dir end
-        osd("video dir not writable — saving elsewhere", 2)
+        osd("video dir not writable, saving elsewhere", 2)
     end
-    if o.fallback_dir ~= "" then return o.fallback_dir end
-    return utils.join_path(cache_dir(), "subs")
+    if o.fallback_dir ~= "" then return ensure_dir(o.fallback_dir) end
+    return ensure_dir(utils.join_path(cache_dir(), "subs"))
 end
 
 local function download(cand, video_path, remote)
-    local token, terr = get_token(false)
-    if not token then return terr end
-
     local body = utils.format_json({ file_id = cand.file_id })
-    local resp, err = api_request({ method = "POST", url = download_base() .. "/download",
-                                    token = token, body = body })
+    local resp, err = authed_request(function()
+        return { method = "POST", url = download_base() .. "/download", body = body }
+    end)
     if not resp then return err end
-    if resp.code == 401 then
-        token, terr = get_token(true)
-        if not token then return terr end
-        resp, err = api_request({ method = "POST", url = download_base() .. "/download",
-                                  token = token, body = body })
-        if not resp then return err end
-    end
-    if resp.code == 429 then return "rate limited, wait a moment and retry" end
     local b = resp.body or {}
     if resp.code ~= 200 or not b.link then
-        local m = b.message or ("HTTP " .. resp.code)
+        local m = api_error("download refused", resp)
         if b.reset_time then m = m .. " (quota resets " .. b.reset_time .. ")" end
-        return "download refused: " .. m
+        return m
     end
 
     local dir = sub_dest_dir(video_path, remote)
@@ -489,33 +485,28 @@ local function download(cand, video_path, remote)
 
     local res, ferr = subprocess({ "curl", "-sSL", "--max-time", "60", "-o", dest, b.link })
     if not res or res.status ~= 0 then
-        return "fetch failed: " .. (ferr or (res.stderr or ""):match("[^\n]+") or "?")
+        return "fetch failed: " .. (ferr or first_line(res and res.stderr) or "?")
     end
 
     mp.commandv("sub-add", dest, "select")
-    local rem = b.remaining and (" — " .. b.remaining .. " downloads left today") or ""
+    local rem = b.remaining and (" (" .. b.remaining .. " downloads left today)") or ""
     osd("loaded " .. (b.file_name or dest) .. rem, 4)
     return nil
 end
 
 -- ------------------------------------------------------- subliminal fallback
--- Self-contained; delete this function (and its call site + the
--- subliminal_fallback option) to drop the dependency entirely.
+-- Self-contained; delete it (plus its call site and the subliminal_fallback
+-- option) to drop the dependency. Returns the number of subtitles added.
 
 local SUB_EXT = { srt = true, ass = true, ssa = true, sub = true, vtt = true }
 
-local function subliminal_fb(video_path, remote)
-    if remote then
-        osd("no subtitles found", 4)
-        return
-    end
-    osd("no API results — trying subliminal…", 30)
-    local dir = sub_dest_dir(video_path, remote)
+local function subliminal_fb(video_path, dir)
+    osd("no API results, trying subliminal…", 30)
     local before = {}
     for _, fn in ipairs(utils.readdir(dir, "files") or {}) do before[fn] = true end
 
     local args = { "subliminal", "download", "-d", dir }
-    for l in o.languages:gmatch("[^,%s]+") do
+    for _, l in ipairs(split_langs(o.languages)) do
         args[#args + 1] = "-l"
         args[#args + 1] = l
     end
@@ -523,15 +514,12 @@ local function subliminal_fb(video_path, remote)
 
     local res, err = subprocess(args)
     if not res or res.error_string == "init" then
-        -- subliminal isn't installed: treat as an ordinary empty result
-        msg.verbose("subliminal unavailable: " .. (err or res.error_string or "?"))
-        osd("no subtitles found", 4)
-        return
+        msg.verbose("subliminal unavailable: " .. (err or "init"))
+        return 0
     end
     if res.status ~= 0 then
         msg.warn(res.stderr or "")
-        osd("subliminal failed (see console)", 5)
-        return
+        return 0, "subliminal failed (see console)"
     end
 
     local added = 0
@@ -541,18 +529,14 @@ local function subliminal_fb(video_path, remote)
             added = added + 1
         end
     end
-    if added > 0 then
-        osd("loaded " .. added .. " subtitle(s) via subliminal", 4)
-    else
-        osd("no subtitles found (API + subliminal)", 4)
-    end
+    return added
 end
 
 -- ------------------------------------------------------------------- main
 
-local state = { path = nil, candidates = nil }
+local state = { path = nil, hash = nil, candidates = nil }
 mp.register_event("start-file", function()
-    state.path, state.candidates = nil, nil
+    state.path, state.hash, state.candidates = nil, nil, nil
 end)
 
 local function abs_video_path()
@@ -562,9 +546,31 @@ local function abs_video_path()
     return utils.join_path(mp.get_property("working-directory") or "", path), false
 end
 
+-- shared by manual and auto search; hash and non-empty results are cached
+local function fetch_candidates(path, remote, title, languages)
+    if state.path ~= path then
+        state.path, state.hash, state.candidates = path, nil, nil
+    end
+    if state.hash == nil and not remote then
+        local h, herr = oshash(path)
+        if not h then msg.verbose("oshash: " .. herr) end
+        state.hash = h or false
+    end
+    local cands, err = search(state.hash or nil, title, languages)
+    if cands and #cands > 0 then state.candidates = cands end
+    return cands, err
+end
+
+local function pick_and_download(cands, path, remote)
+    local cand = pick(cands)
+    if not cand then return end
+    local err = download(cand, path, remote)
+    if err then osd(err, 5) end
+end
+
 local function main(manual)
     if o.api_key == "" then
-        osd("no api_key — copy script-opts/jamak.conf.example to jamak.conf and fill it in", 6)
+        osd("no api_key, copy jamak.conf.example to script-opts/jamak.conf", 6)
         return
     end
     local path, remote = abs_video_path()
@@ -573,44 +579,43 @@ local function main(manual)
         return
     end
 
-    local cands
     if not manual and state.path == path and state.candidates then
-        cands = state.candidates
-    else
-        local title = guess_title(mp.get_property("filename") or mp.get_property("media-title") or "")
-        local languages
-        if manual then
-            title = ask_title(title)
-            if not title or title == "" then return end
-            languages = ask_language()
-            if not languages then return end
-        end
-        local hash
-        if not remote then
-            local herr
-            hash, herr = oshash(path)
-            if not hash then msg.verbose("oshash: " .. herr) end
-        end
-        osd("searching…", 30)
-        local err
-        cands, err = search(hash, title, languages)
-        if not cands then
-            osd(err, 5)
-            return
-        end
-        if #cands == 0 then
-            if o.subliminal_fallback then return subliminal_fb(path, remote) end
-            osd("no subtitles found", 4)
-            return
-        end
-        state.path, state.candidates = path, cands
-        osd(#cands .. " result" .. (#cands == 1 and "" or "s"), 1)
+        return pick_and_download(state.candidates, path, remote)
     end
 
-    local cand = pick(cands)
-    if not cand then return end
-    local err = download(cand, path, remote)
-    if err then osd(err, 5) end
+    local title = guess_title(mp.get_property("filename/no-ext")
+        or mp.get_property("media-title") or "")
+    local languages
+    if manual then
+        run(get_languages)  -- warm the language list while the user types
+        title = ask_title(title)
+        if not title or title == "" then return end
+        languages = ask_language()
+        if not languages then return end
+    end
+
+    osd("searching…", 30)
+    local cands, err = fetch_candidates(path, remote, title, languages)
+    if not cands then
+        osd(err, 5)
+        return
+    end
+    if #cands == 0 then
+        local added, serr = 0, nil
+        if o.subliminal_fallback and not remote then
+            added, serr = subliminal_fb(path, sub_dest_dir(path, remote))
+        end
+        if serr then
+            osd(serr, 5)
+        elseif added > 0 then
+            osd("loaded " .. added .. " subtitle(s) via subliminal", 4)
+        else
+            osd("no subtitles found", 4)
+        end
+        return
+    end
+    osd(#cands .. " result" .. (#cands == 1 and "" or "s"), 1)
+    pick_and_download(cands, path, remote)
 end
 
 -- ---------------------------------------------------------------- auto mode
@@ -627,9 +632,8 @@ mp.register_event("file-loaded", function()
     run(function()
         local path, remote = abs_video_path()
         if not path or remote or has_sub_track() then return end
-        local title = guess_title(mp.get_property("filename") or "")
-        local hash = oshash(path)
-        local cands, err = search(hash, title)
+        local title = guess_title(mp.get_property("filename/no-ext") or "")
+        local cands, err = fetch_candidates(path, false, title)
         if not cands then
             msg.warn("auto: " .. err)
             return
@@ -638,12 +642,11 @@ mp.register_event("file-loaded", function()
             msg.verbose("auto: no results")
             return
         end
-        state.path, state.candidates = path, cands
-        if hash and cands[1].hash_match then
-            local derr = download(cands[1], path, remote)
+        if cands[1].hash_match then
+            local derr = download(cands[1], path, false)
             if derr then osd(derr, 5) end
         else
-            osd(#cands .. " subs available — Ctrl+u to pick", 4)
+            osd(#cands .. " subs available, press Ctrl+u to pick", 4)
         end
     end)
 end)
@@ -655,7 +658,7 @@ mp.add_key_binding("Ctrl+U", "jamak-search-manual", function()
     run(function() main(true) end)
 end)
 
--- debug helper: `script-message jamak-hash` logs the current file's oshash
+-- `script-message jamak-hash` logs the current file's moviehash
 mp.register_script_message("jamak-hash", function()
     local path = abs_video_path()
     if not path then return end
