@@ -72,14 +72,28 @@ local function write_file(path, s)
     return true
 end
 
+local PLATFORM = mp.get_property_native("platform") or "linux"
+
 local cache_dir_made = false
 local function cache_dir()
-    local base = os.getenv("XDG_CACHE_HOME")
-        or utils.join_path(os.getenv("HOME") or "/tmp", ".cache")
+    local base
+    if PLATFORM == "windows" then
+        base = os.getenv("LOCALAPPDATA")
+            or utils.join_path(os.getenv("USERPROFILE") or ".", "AppData/Local")
+    else
+        base = os.getenv("XDG_CACHE_HOME")
+            or utils.join_path(os.getenv("HOME") or "/tmp", ".cache")
+    end
     local dir = utils.join_path(base, "jamak")
     if not cache_dir_made then
-        mp.command_native({ name = "subprocess", args = { "mkdir", "-p", utils.join_path(dir, "subs") },
-                            playback_only = false })
+        local subs = utils.join_path(dir, "subs")
+        -- cmd's mkdir has no -p but creates intermediate dirs by default;
+        -- it wants backslashes and errors harmlessly if the dir exists
+        local args = PLATFORM == "windows"
+            and { "cmd", "/d", "/c", "mkdir", (subs:gsub("/", "\\")) }
+            or { "mkdir", "-p", subs }
+        mp.command_native({ name = "subprocess", args = args,
+                            playback_only = false, capture_stderr = true })
         cache_dir_made = true
     end
     return dir
@@ -508,8 +522,14 @@ local function subliminal_fb(video_path, remote)
     args[#args + 1] = video_path
 
     local res, err = subprocess(args)
-    if not res or res.status ~= 0 then
-        msg.warn(res and res.stderr or err or "")
+    if not res or res.error_string == "init" then
+        -- subliminal isn't installed: treat as an ordinary empty result
+        msg.verbose("subliminal unavailable: " .. (err or res.error_string or "?"))
+        osd("no subtitles found", 4)
+        return
+    end
+    if res.status ~= 0 then
+        msg.warn(res.stderr or "")
         osd("subliminal failed (see console)", 5)
         return
     end
