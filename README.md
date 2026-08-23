@@ -27,8 +27,6 @@ and shows ranked results in mpv's console UI, drawn over the video.
 
 * mpv 0.39 or newer (uses the `mp.input` console API)
 * `curl`
-* optional: [subliminal](https://github.com/Diaoul/subliminal), used as a
-  fallback only when the API returns nothing
 
 ## Installation
 

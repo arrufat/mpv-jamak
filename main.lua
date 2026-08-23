@@ -16,7 +16,6 @@ local o = {
     password = "",
     languages = "en,ko",
     auto = false,
-    subliminal_fallback = true,
     fallback_dir = "",
 }
 require("mp.options").read_options(o, "jamak")
@@ -494,44 +493,6 @@ local function download(cand, video_path, remote)
     return nil
 end
 
--- ------------------------------------------------------- subliminal fallback
--- Self-contained; delete it (plus its call site and the subliminal_fallback
--- option) to drop the dependency. Returns the number of subtitles added.
-
-local SUB_EXT = { srt = true, ass = true, ssa = true, sub = true, vtt = true }
-
-local function subliminal_fb(video_path, dir)
-    osd("no API results, trying subliminal…", 30)
-    local before = {}
-    for _, fn in ipairs(utils.readdir(dir, "files") or {}) do before[fn] = true end
-
-    local args = { "subliminal", "download", "-d", dir }
-    for _, l in ipairs(split_langs(o.languages)) do
-        args[#args + 1] = "-l"
-        args[#args + 1] = l
-    end
-    args[#args + 1] = video_path
-
-    local res, err = subprocess(args)
-    if not res or res.error_string == "init" then
-        msg.verbose("subliminal unavailable: " .. (err or "init"))
-        return 0
-    end
-    if res.status ~= 0 then
-        msg.warn(res.stderr or "")
-        return 0, "subliminal failed (see console)"
-    end
-
-    local added = 0
-    for _, fn in ipairs(utils.readdir(dir, "files") or {}) do
-        if not before[fn] and SUB_EXT[fn:match("%.([^.]+)$") or ""] then
-            mp.commandv("sub-add", utils.join_path(dir, fn), added == 0 and "select" or "auto")
-            added = added + 1
-        end
-    end
-    return added
-end
-
 -- ------------------------------------------------------------------- main
 
 local state = { path = nil, hash = nil, candidates = nil }
@@ -601,17 +562,7 @@ local function main(manual)
         return
     end
     if #cands == 0 then
-        local added, serr = 0, nil
-        if o.subliminal_fallback and not remote then
-            added, serr = subliminal_fb(path, sub_dest_dir(path, remote))
-        end
-        if serr then
-            osd(serr, 5)
-        elseif added > 0 then
-            osd("loaded " .. added .. " subtitle(s) via subliminal", 4)
-        else
-            osd("no subtitles found", 4)
-        end
+        osd("no subtitles found", 4)
         return
     end
     osd(#cands .. " result" .. (#cands == 1 and "" or "s"), 1)

@@ -19,10 +19,6 @@ languages=en,ko
 # hint that results exist (never spends download quota on a guess)
 auto=no
 
-# Run subliminal when the API returns zero results (yes/no); ignored if
-# subliminal is not installed
-subliminal_fallback=yes
-
 # Where to save subtitles when the video's directory is unwritable
 # (empty = the jamak folder in mpv's cache directory, e.g. ~/.cache/mpv/jamak/subs)
 fallback_dir=
