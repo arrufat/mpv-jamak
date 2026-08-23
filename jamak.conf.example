@@ -1,0 +1,28 @@
+# jamak configuration — copy this file to your mpv config dir as
+# script-opts/jamak.conf and fill in your credentials.
+#
+# Get an API key: create an account at https://www.opensubtitles.com, then
+# register a consumer at https://www.opensubtitles.com/consumers
+#
+# NOTE: credentials are stored in plain text (mpv has no secret store).
+# Keep this file out of any public dotfiles repo.
+
+api_key=YOUR_API_KEY
+username=YOUR_USERNAME
+password=YOUR_PASSWORD
+
+# Comma-separated 2-letter language codes, in priority order for ranking
+languages=en
+
+# Auto mode (yes/no): on file load, if the file has no subtitle track,
+# auto-download when there's an exact moviehash match; otherwise just show a
+# hint that results exist (never spends download quota on a guess)
+auto=no
+
+# Run subliminal when the API returns zero results (yes/no); ignored if
+# subliminal is not installed
+subliminal_fallback=yes
+
+# Where to save subtitles when the video's directory is unwritable
+# (empty = ~/.cache/jamak/subs)
+fallback_dir=
