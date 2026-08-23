@@ -339,6 +339,8 @@ local function search(hash, title, languages)
         local a = item.attributes or {}
         local f = a.files and a.files[1]
         if f and f.file_id then
+            local fd = a.feature_details or {}
+            local fps = tonumber(a.fps)
             cands[#cands + 1] = {
                 file_id = f.file_id,
                 file_name = f.file_name or "",
@@ -346,6 +348,12 @@ local function search(hash, title, languages)
                 release = a.release or f.file_name or "?",
                 dl = a.download_count or 0,
                 hash_match = a.moviehash_match == true,
+                hi = a.hearing_impaired == true,
+                ai = a.ai_translated == true or a.machine_translated == true,
+                fps = fps and fps > 0 and fps or nil,
+                feature_id = fd.feature_id,
+                feature_title = fd.title,
+                feature_year = fd.year,
             }
         end
     end
@@ -353,6 +361,7 @@ local function search(hash, title, languages)
         if x.hash_match ~= y.hash_match then return x.hash_match end
         local px, py = prio[x.lang] or 99, prio[y.lang] or 99
         if px ~= py then return px < py end
+        if x.ai ~= y.ai then return y.ai end
         return x.dl > y.dl
     end)
     msg.verbose(#cands .. " candidates")
@@ -397,10 +406,26 @@ end
 -- --------------------------------------------------------------------- UI
 
 local function pick(cands)
+    -- prefix the resolved feature only when results span more than one
+    local seen, feature_count = {}, 0
+    for _, c in ipairs(cands) do
+        if c.feature_id and not seen[c.feature_id] then
+            seen[c.feature_id] = true
+            feature_count = feature_count + 1
+        end
+    end
     local items = {}
     for i, c in ipairs(cands) do
-        items[i] = string.format("%s[%s] %s (%d dl)",
-            c.hash_match and "[HASH] " or "", c.lang, c.release, c.dl)
+        local tags = (c.hash_match and "[HASH] " or "") .. "[" .. c.lang .. "]"
+            .. (c.hi and " [HI]" or "") .. (c.ai and " [AI]" or "")
+        local feature = ""
+        if feature_count > 1 and c.feature_title then
+            feature = c.feature_title
+                .. (c.feature_year and (" (" .. c.feature_year .. ")") or "") .. ": "
+        end
+        local fps = c.fps and string.format(", %gfps", c.fps) or ""
+        items[i] = string.format("%s %s%s (%d dl%s)", tags, feature, c.release, c.dl, fps)
+        msg.debug(items[i])
     end
     local idx = await(function(cb)
         input.select({ prompt = "Subtitle:", items = items, submit = cb })
