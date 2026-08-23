@@ -5,6 +5,8 @@ for [mpv](https://mpv.io), written in plain Lua with `curl` as its only
 dependency. It searches [OpenSubtitles.com](https://www.opensubtitles.com)
 and shows ranked results in mpv's console UI, drawn over the video.
 
+![jamak's subtitle picker over Sintel](https://github.com/arrufat/mpv-jamak/releases/download/0.1.0/screenshot.jpg)
+
 ## Features
 
 * No dependencies beyond `curl`. Single Lua file, nothing to install.
