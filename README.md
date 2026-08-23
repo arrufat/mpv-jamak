@@ -63,7 +63,7 @@ auto-load on replay:
 
 ```ini
 sub-auto=fuzzy
-slang=en,eng
+slang=en,eng,ko,kor
 ```
 
 ## Usage

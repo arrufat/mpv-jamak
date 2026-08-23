@@ -12,7 +12,7 @@ username=YOUR_USERNAME
 password=YOUR_PASSWORD
 
 # Comma-separated 2-letter language codes, in priority order for ranking
-languages=en
+languages=en,ko
 
 # Auto mode (yes/no): on file load, if the file has no subtitle track,
 # auto-download when there's an exact moviehash match; otherwise just show a
