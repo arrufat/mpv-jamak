@@ -341,6 +341,7 @@ local function search(hash, title, languages, vfps)
         if f and f.file_id then
             local fd = a.feature_details or {}
             local fps = tonumber(a.fps)
+            if fps and fps <= 0 then fps = nil end
             cands[#cands + 1] = {
                 file_id = f.file_id,
                 file_name = f.file_name or "",
@@ -350,20 +351,20 @@ local function search(hash, title, languages, vfps)
                 hash_match = a.moviehash_match == true,
                 hi = a.hearing_impaired == true,
                 ai = a.ai_translated == true or a.machine_translated == true,
-                fps = fps and fps > 0 and fps or nil,
+                fps = fps,
                 video_fps = vfps,
-                fps_mismatch = (vfps and fps and fps > 0
-                    and math.abs(fps - vfps) > 0.01) or false,
+                fps_mismatch = (vfps and fps and math.abs(fps - vfps) > 0.01) or false,
                 feature_id = fd.feature_id,
                 feature_title = fd.title,
                 feature_year = fd.year,
-                feature_type = fd.feature_type,
+                is_episode = fd.feature_type == "Episode",
                 parent_title = fd.parent_title,
                 season = tonumber(fd.season_number),
                 episode = tonumber(fd.episode_number),
             }
         end
     end
+    -- this order also decides which candidate auto mode downloads
     table.sort(cands, function(x, y)
         if x.hash_match ~= y.hash_match then return x.hash_match end
         local px, py = prio[x.lang] or 99, prio[y.lang] or 99
@@ -428,7 +429,7 @@ local function pick(cands)
             .. (c.hi and " [HI]" or "") .. (c.ai and " [AI]" or "")
         local feature = ""
         if feature_count > 1 and c.feature_title then
-            if c.feature_type == "Episode" and c.parent_title then
+            if c.is_episode and c.parent_title then
                 -- Show (S01E11) Episode Title:
                 local code = c.season and c.episode
                     and string.format(" (S%02dE%02d)", c.season, c.episode)
@@ -441,9 +442,8 @@ local function pick(cands)
         end
         local fps = ""
         if c.fps then
-            fps = c.fps_mismatch
-                and string.format(", %gfps, video %g", c.fps, c.video_fps)
-                or string.format(", %gfps", c.fps)
+            fps = string.format(", %gfps", c.fps)
+                .. (c.fps_mismatch and string.format(", video %g", c.video_fps) or "")
         end
         items[i] = string.format("%s %s%s (%d dl%s)", tags, feature, c.release, c.dl, fps)
         msg.debug(items[i])
@@ -643,13 +643,11 @@ mp.register_event("file-loaded", function()
         -- spend quota only on a hash match whose fps doesn't conflict
         local best, conflicted
         for _, c in ipairs(cands) do
-            if c.hash_match then
-                if not c.fps_mismatch then
-                    best = c
-                    break
-                end
-                conflicted = true
+            if c.hash_match and not c.fps_mismatch then
+                best = c
+                break
             end
+            conflicted = conflicted or c.hash_match
         end
         if best then
             local derr = download(best, path, false)
