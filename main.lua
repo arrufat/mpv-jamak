@@ -316,7 +316,7 @@ end
 
 -- ---------------------------------------------------------- search & ranking
 
-local function search(hash, title, languages)
+local function search(hash, title, languages, vfps)
     local langs = split_langs(languages or o.languages)
     local prio = {}
     for i, l in ipairs(langs) do prio[l] = i end
@@ -351,6 +351,9 @@ local function search(hash, title, languages)
                 hi = a.hearing_impaired == true,
                 ai = a.ai_translated == true or a.machine_translated == true,
                 fps = fps and fps > 0 and fps or nil,
+                video_fps = vfps,
+                fps_mismatch = (vfps and fps and fps > 0
+                    and math.abs(fps - vfps) > 0.01) or false,
                 feature_id = fd.feature_id,
                 feature_title = fd.title,
                 feature_year = fd.year,
@@ -366,6 +369,7 @@ local function search(hash, title, languages)
         local px, py = prio[x.lang] or 99, prio[y.lang] or 99
         if px ~= py then return px < py end
         if x.ai ~= y.ai then return y.ai end
+        if x.fps_mismatch ~= y.fps_mismatch then return y.fps_mismatch end
         return x.dl > y.dl
     end)
     msg.verbose(#cands .. " candidates")
@@ -435,7 +439,12 @@ local function pick(cands)
                     .. (c.feature_year and (" (" .. c.feature_year .. ")") or "") .. ": "
             end
         end
-        local fps = c.fps and string.format(", %gfps", c.fps) or ""
+        local fps = ""
+        if c.fps then
+            fps = c.fps_mismatch
+                and string.format(", %gfps, video %g", c.fps, c.video_fps)
+                or string.format(", %gfps", c.fps)
+        end
         items[i] = string.format("%s %s%s (%d dl%s)", tags, feature, c.release, c.dl, fps)
         msg.debug(items[i])
     end
@@ -554,7 +563,8 @@ local function fetch_candidates(path, remote, title, languages)
         if not h then msg.verbose("oshash: " .. herr) end
         state.hash = h or false
     end
-    local cands, err = search(state.hash or nil, title, languages)
+    local cands, err = search(state.hash or nil, title, languages,
+        mp.get_property_native("container-fps"))
     if cands and #cands > 0 then state.candidates = cands end
     return cands, err
 end
@@ -630,9 +640,22 @@ mp.register_event("file-loaded", function()
             msg.verbose("auto: no results")
             return
         end
-        if cands[1].hash_match then
-            local derr = download(cands[1], path, false)
+        -- spend quota only on a hash match whose fps doesn't conflict
+        local best, conflicted
+        for _, c in ipairs(cands) do
+            if c.hash_match then
+                if not c.fps_mismatch then
+                    best = c
+                    break
+                end
+                conflicted = true
+            end
+        end
+        if best then
+            local derr = download(best, path, false)
             if derr then osd(derr, 5) end
+        elseif conflicted then
+            osd("hash match has an fps mismatch, press Ctrl+u to pick", 4)
         else
             osd(#cands .. " subs available, press Ctrl+u to pick", 4)
         end

@@ -78,7 +78,10 @@ Both are rebindable in `input.conf` via
 `script-binding jamak/jamak-search-manual`.
 
 Results are ranked by exact hash match, then your configured language
-priority, then download count. Downloads land next to the video as
+priority, human before AI-translated, matching frame rate, then download
+count. When a subtitle's frame rate disagrees with the playing file's,
+the row shows both (`30fps, video 23.976`) and auto mode refuses to
+spend a download on such a hash match. Downloads land next to the video as
 `<video>.<lang>.srt` (or in `fallback_dir` if the directory isn't
 writable) and are selected immediately.
 
