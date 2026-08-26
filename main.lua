@@ -48,25 +48,23 @@ local function split_langs(s)
     return langs
 end
 
-local function read_file(path)
+local function read_json(path)
     local f = io.open(path, "r")
     if not f then return nil end
     local s = f:read("*a")
     f:close()
-    return s
+    return utils.parse_json(s)
 end
 
-local function write_file(path, s)
+local function write_json(path, t)
     local f = io.open(path, "w")
-    if not f then return false end
-    f:write(s)
+    if not f then return end
+    f:write(utils.format_json(t))
     f:close()
-    return true
 end
 
-local ensured_dirs = {}
 local function ensure_dir(dir)
-    if not ensured_dirs[dir] then
+    if not utils.file_info(dir) then
         -- cmd's mkdir has no -p but creates parents by default; it wants
         -- backslashes and errors harmlessly if the dir already exists
         local args = PLATFORM == "windows"
@@ -74,7 +72,6 @@ local function ensure_dir(dir)
             or { "mkdir", "-p", dir }
         mp.command_native({ name = "subprocess", args = args,
                             playback_only = false, capture_stderr = true })
-        ensured_dirs[dir] = true
     end
     return dir
 end
@@ -91,6 +88,10 @@ local function cache_dir()
         cache_dir_cached = ensure_dir(dir)
     end
     return cache_dir_cached
+end
+
+local function cache_path(name)
+    return utils.join_path(cache_dir(), name)
 end
 
 -- ------------------------------------------------------- coroutine plumbing
@@ -122,6 +123,7 @@ local function await(fn)
     return coroutine.yield()
 end
 
+-- returns the result table, or nil plus the first stderr line on failure
 local function subprocess(args)
     local ok, res, err = await(function(cb)
         mp.command_native_async({ name = "subprocess", args = args,
@@ -129,19 +131,26 @@ local function subprocess(args)
                                   playback_only = false }, cb)
     end)
     if not ok or not res then return nil, err or "subprocess failed" end
+    if res.status ~= 0 then
+        return nil, first_line(res.stderr) or ("exit status " .. res.status)
+    end
     return res
 end
 
 -- --------------------------------------------------------------- HTTP layer
 
--- params must be sorted or the API 301-redirects to its canonical URL form
+-- params = {key = value}; keys are sorted and values encoded because the
+-- API 301-redirects anything but its canonical URL form
 local function api_url(path, params)
-    if not params or #params == 0 then return API .. path end
-    table.sort(params)
-    return API .. path .. "?" .. table.concat(params, "&")
+    local keys = {}
+    for k in pairs(params or {}) do keys[#keys + 1] = k end
+    if #keys == 0 then return API .. path end
+    table.sort(keys)
+    for i, k in ipairs(keys) do keys[i] = k .. "=" .. urlencode(tostring(params[k])) end
+    return API .. path .. "?" .. table.concat(keys, "&")
 end
 
--- req = {url, method?, token?, body?}  ->  {code, body (parsed), raw}, err
+-- req = {url, method?, token?, body?}  ->  {code, body (parsed)}, err
 local function api_request(req)
     local args = { "curl", "-sS", "--compressed", "--max-time", "15",
                    "-w", "\n%{http_code}" }
@@ -169,38 +178,38 @@ local function api_request(req)
     end
 
     local res, err = subprocess(args)
-    if not res then return nil, err end
-    if res.status ~= 0 then
-        return nil, "network error: "
-            .. (first_line(res.stderr) or ("curl exit " .. res.status))
-    end
+    if not res then return nil, "network error: " .. err end
     local body, code = res.stdout:match("^(.*)\n(%d+)%s*$")
     if not code then return nil, "unexpected curl output" end
     code = tonumber(code)
     if code == 429 then return nil, "rate limited by OpenSubtitles, retry in a minute" end
-    return { code = code,
-             body = body ~= "" and utils.parse_json(body) or nil,
-             raw = body }
+    return { code = code, body = body ~= "" and utils.parse_json(body) or nil }
 end
 
 local function api_error(what, resp)
     return what .. ": " .. ((resp.body and resp.body.message) or ("HTTP " .. resp.code))
 end
 
--- ------------------------------------------------------------ token manager
+-- ---------------------------------------------------------------- session
 
-local token_cache
+local session  -- {token, base, created}, mirrored in token.json
 
-local function get_token(force)
-    if not force then
-        if not token_cache then
-            token_cache = utils.parse_json(read_file(utils.join_path(cache_dir(), "token.json")) or "")
-        end
-        if token_cache and token_cache.token
-            and os.time() - (token_cache.created or 0) < TOKEN_MAX_AGE then
-            return token_cache.token
-        end
+-- VIP accounts are told to use a different host in the login response
+local function api_base(host)
+    if not host or host == "" or host:find("api%.opensubtitles%.com") then return API end
+    if not host:find("://") then host = "https://" .. host end
+    return host .. "/api/v1"
+end
+
+local function cached_session()
+    if not session then session = read_json(cache_path("token.json")) end
+    if session and session.token and session.base
+        and os.time() - (session.created or 0) < TOKEN_MAX_AGE then
+        return session
     end
+end
+
+local function login()
     if o.username == "" or o.password == "" then
         return nil, "no credentials, fill in script-opts/jamak.conf"
     end
@@ -214,32 +223,24 @@ local function get_token(force)
     if resp.code ~= 200 or not resp.body or not resp.body.token then
         return nil, api_error("login failed", resp)
     end
-    token_cache = { token = resp.body.token, created = os.time(),
-                    base_url = resp.body.base_url }
-    write_file(utils.join_path(cache_dir(), "token.json"), utils.format_json(token_cache))
-    return token_cache.token
+    session = { token = resp.body.token, created = os.time(),
+                base = api_base(resp.body.base_url) }
+    write_json(cache_path("token.json"), session)
+    return session
 end
 
--- VIP accounts are told to use a different host in the login response
-local function download_base()
-    local b = token_cache and token_cache.base_url
-    if b and b ~= "" and not b:find("api%.opensubtitles%.com") then
-        if not b:find("://") then b = "https://" .. b end
-        return b .. "/api/v1"
-    end
-    return API
-end
-
--- retries once with a fresh token on 401
-local function authed_request(build)
-    for _, force in ipairs({ false, true }) do
-        local token, terr = get_token(force)
-        if not token then return nil, terr end
-        local req = build()
-        req.token = token
-        local resp, err = api_request(req)
+-- req = {path, method?, body?}; retries once with a fresh login on 401
+local function authed_request(req)
+    local s, err = cached_session()
+    if not s then s, err = login() end
+    for _ = 1, 2 do
+        if not s then return nil, err end
+        local resp
+        resp, err = api_request({ method = req.method, url = s.base .. req.path,
+                                  body = req.body, token = s.token })
         if not resp then return nil, err end
         if resp.code ~= 401 then return resp end
+        s, err = login()
     end
     return nil, "authentication failed (401)"
 end
@@ -316,6 +317,18 @@ end
 
 -- ---------------------------------------------------------- search & ranking
 
+-- "Show (S01E11) Episode Title" or "Title (Year)", nil when unknown
+local function feature_label(fd)
+    if not fd.title then return nil end
+    if fd.feature_type == "Episode" and fd.parent_title then
+        local s, e = tonumber(fd.season_number), tonumber(fd.episode_number)
+        local code = s and e and string.format(" (S%02dE%02d)", s, e)
+            or e and string.format(" (E%02d)", e) or ""
+        return fd.parent_title .. code .. " " .. fd.title
+    end
+    return fd.title .. (fd.year and (" (" .. fd.year .. ")") or "")
+end
+
 local function search(hash, title, languages, vfps)
     local langs = split_langs(languages or o.languages)
     local prio = {}
@@ -323,10 +336,11 @@ local function search(hash, title, languages, vfps)
     local sorted = { unpack(langs) }
     table.sort(sorted)
 
-    local params = { "languages=" .. urlencode(table.concat(sorted, ",")) }
-    if hash then params[#params + 1] = "moviehash=" .. hash end
-    if title and title ~= "" then params[#params + 1] = "query=" .. urlencode(title:lower()) end
-    local url = api_url("/subtitles", params)
+    local url = api_url("/subtitles", {
+        languages = table.concat(sorted, ","),
+        moviehash = hash or nil,
+        query = title ~= "" and title:lower() or nil,
+    })
     msg.verbose("GET " .. url)
     local resp, err = api_request({ url = url })
     if not resp then return nil, err end
@@ -355,16 +369,11 @@ local function search(hash, title, languages, vfps)
                 video_fps = vfps,
                 fps_mismatch = (vfps and fps and math.abs(fps - vfps) > 0.01) or false,
                 feature_id = fd.feature_id,
-                feature_title = fd.title,
-                feature_year = fd.year,
-                is_episode = fd.feature_type == "Episode",
-                parent_title = fd.parent_title,
-                season = tonumber(fd.season_number),
-                episode = tonumber(fd.episode_number),
+                feature = feature_label(fd),
             }
         end
     end
-    -- this order also decides which candidate auto mode downloads
+    -- auto mode downloads the first of these that is a clean hash match
     table.sort(cands, function(x, y)
         if x.hash_match ~= y.hash_match then return x.hash_match end
         local px, py = prio[x.lang] or 99, prio[y.lang] or 99
@@ -391,13 +400,13 @@ local function get_languages()
         return lang_list
     end
     lang_waiters = {}
-    local path = utils.join_path(cache_dir(), "languages.json")
-    local parsed = utils.parse_json(read_file(path) or "")
+    local path = cache_path("languages.json")
+    local parsed = read_json(path)
     if type(parsed) ~= "table" or #parsed == 0 then
         local resp = api_request({ url = api_url("/infos/languages") })
         if resp and resp.code == 200 and resp.body and type(resp.body.data) == "table" then
             parsed = resp.body.data
-            write_file(path, utils.format_json(parsed))
+            write_json(path, parsed)
         end
     end
     if type(parsed) == "table" and #parsed > 0 then
@@ -414,6 +423,13 @@ end
 
 -- --------------------------------------------------------------------- UI
 
+-- returns the chosen 1-based index, nil on cancel
+local function choose(prompt, items)
+    return await(function(cb)
+        input.select({ prompt = prompt, items = items, submit = cb })
+    end)
+end
+
 local function pick(cands)
     -- prefix the resolved feature only when results span more than one
     local seen, feature_count = {}, 0
@@ -427,19 +443,7 @@ local function pick(cands)
     for i, c in ipairs(cands) do
         local tags = (c.hash_match and "[HASH] " or "") .. "[" .. c.lang .. "]"
             .. (c.hi and " [HI]" or "") .. (c.ai and " [AI]" or "")
-        local feature = ""
-        if feature_count > 1 and c.feature_title then
-            if c.is_episode and c.parent_title then
-                -- Show (S01E11) Episode Title:
-                local code = c.season and c.episode
-                    and string.format(" (S%02dE%02d)", c.season, c.episode)
-                    or c.episode and string.format(" (E%02d)", c.episode) or ""
-                feature = c.parent_title .. code .. " " .. c.feature_title .. ": "
-            else
-                feature = c.feature_title
-                    .. (c.feature_year and (" (" .. c.feature_year .. ")") or "") .. ": "
-            end
-        end
+        local feature = feature_count > 1 and c.feature and (c.feature .. ": ") or ""
         local fps = ""
         if c.fps then
             fps = string.format(", %gfps", c.fps)
@@ -448,9 +452,7 @@ local function pick(cands)
         items[i] = string.format("%s %s%s (%d dl%s)", tags, feature, c.release, c.dl, fps)
         msg.debug(items[i])
     end
-    local idx = await(function(cb)
-        input.select({ prompt = "Subtitle:", items = items, submit = cb })
-    end)
+    local idx = choose("Subtitle:", items)
     return idx and cands[idx]
 end
 
@@ -483,9 +485,7 @@ local function ask_language()
             codes[#codes + 1] = code
         end
     end
-    local idx = await(function(cb)
-        input.select({ prompt = "Language:", items = items, submit = cb })
-    end)
+    local idx = choose("Language:", items)
     return idx and codes[idx]
 end
 
@@ -507,20 +507,25 @@ local function sub_dest_dir(video_path, remote)
         osd("video dir not writable, saving elsewhere", 2)
     end
     if o.fallback_dir ~= "" then return ensure_dir(o.fallback_dir) end
-    return ensure_dir(utils.join_path(cache_dir(), "subs"))
+    return ensure_dir(cache_path("subs"))
 end
 
+-- fetches and loads the subtitle; reports failures on the OSD
 local function download(cand, video_path, remote)
-    local body = utils.format_json({ file_id = cand.file_id })
-    local resp, err = authed_request(function()
-        return { method = "POST", url = download_base() .. "/download", body = body }
-    end)
-    if not resp then return err end
+    local resp, err = authed_request({
+        method = "POST", path = "/download",
+        body = utils.format_json({ file_id = cand.file_id }),
+    })
+    if not resp then
+        osd(err, 5)
+        return
+    end
     local b = resp.body or {}
     if resp.code ~= 200 or not b.link then
         local m = api_error("download refused", resp)
         if b.reset_time then m = m .. " (quota resets " .. b.reset_time .. ")" end
-        return m
+        osd(m, 5)
+        return
     end
 
     local dir = sub_dest_dir(video_path, remote)
@@ -529,22 +534,19 @@ local function download(cand, video_path, remote)
     local dest = utils.join_path(dir, string.format("%s.%s.%s", base, cand.lang, ext))
 
     local res, ferr = subprocess({ "curl", "-sSL", "--max-time", "60", "-o", dest, b.link })
-    if not res or res.status ~= 0 then
-        return "fetch failed: " .. (ferr or first_line(res and res.stderr) or "?")
+    if not res then
+        osd("fetch failed: " .. ferr, 5)
+        return
     end
 
     mp.commandv("sub-add", dest, "select")
     local rem = b.remaining and (" (" .. b.remaining .. " downloads left today)") or ""
     osd("loaded " .. (b.file_name or dest) .. rem, 4)
-    return nil
 end
 
 -- ------------------------------------------------------------------- main
 
-local state = { path = nil, hash = nil, candidates = nil }
-mp.register_event("start-file", function()
-    state.path, state.hash, state.candidates = nil, nil, nil
-end)
+local state = {}  -- per video: path, hash (false = unhashable), candidates
 
 local function abs_video_path()
     local path = mp.get_property("path")
@@ -553,17 +555,20 @@ local function abs_video_path()
     return utils.join_path(mp.get_property("working-directory") or "", path), false
 end
 
+local function default_title()
+    return guess_title(mp.get_property("filename/no-ext")
+        or mp.get_property("media-title") or "")
+end
+
 -- shared by manual and auto search; hash and non-empty results are cached
 local function fetch_candidates(path, remote, title, languages)
-    if state.path ~= path then
-        state.path, state.hash, state.candidates = path, nil, nil
-    end
+    if state.path ~= path then state = { path = path } end
     if state.hash == nil and not remote then
         local h, herr = oshash(path)
         if not h then msg.verbose("oshash: " .. herr) end
         state.hash = h or false
     end
-    local cands, err = search(state.hash or nil, title, languages,
+    local cands, err = search(state.hash, title or default_title(), languages,
         mp.get_property_native("container-fps"))
     if cands and #cands > 0 then state.candidates = cands end
     return cands, err
@@ -571,9 +576,7 @@ end
 
 local function pick_and_download(cands, path, remote)
     local cand = pick(cands)
-    if not cand then return end
-    local err = download(cand, path, remote)
-    if err then osd(err, 5) end
+    if cand then download(cand, path, remote) end
 end
 
 local function main(manual)
@@ -591,12 +594,10 @@ local function main(manual)
         return pick_and_download(state.candidates, path, remote)
     end
 
-    local title = guess_title(mp.get_property("filename/no-ext")
-        or mp.get_property("media-title") or "")
-    local languages
+    local title, languages
     if manual then
         run(get_languages)  -- warm the language list while the user types
-        title = ask_title(title)
+        title = ask_title(default_title())
         if not title or title == "" then return end
         languages = ask_language()
         if not languages then return end
@@ -630,8 +631,7 @@ mp.register_event("file-loaded", function()
     run(function()
         local path, remote = abs_video_path()
         if not path or remote or has_sub_track() then return end
-        local title = guess_title(mp.get_property("filename/no-ext") or "")
-        local cands, err = fetch_candidates(path, false, title)
+        local cands, err = fetch_candidates(path, false)
         if not cands then
             msg.warn("auto: " .. err)
             return
@@ -650,8 +650,7 @@ mp.register_event("file-loaded", function()
             conflicted = conflicted or c.hash_match
         end
         if best then
-            local derr = download(best, path, false)
-            if derr then osd(derr, 5) end
+            download(best, path, false)
         elseif conflicted then
             osd("hash match has an fps mismatch, press Ctrl+u to pick", 4)
         else
