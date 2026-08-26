@@ -59,10 +59,10 @@ with the video shows both (`30fps, video 23.976`). Hearing-impaired subs
 are tagged `[HI]`. Downloads land next to the video as
 `<video>.<lang>.srt` (or in `fallback_dir`) and are selected immediately.
 
-With `auto=yes`, a file that loads without any subtitle track gets a
+With `auto=yes`, a video that loads without any subtitle track gets a
 hands-free download when a clean hash match exists; otherwise jamak just
 hints that results are available, spending nothing. Files with subs
-(embedded or sibling `.srt`) are skipped entirely.
+(embedded or sibling `.srt`), audio files and images are skipped entirely.
 
 Debugging: `script-message jamak-hash` prints the file's moviehash;
 `--msg-level=jamak=v` logs queries and result counts.

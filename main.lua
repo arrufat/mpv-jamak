@@ -388,18 +388,11 @@ end
 
 -- ------------------------------------------------------------ language list
 
-local lang_list, lang_waiters
+local lang_list
 
--- full language list from the API, cached in memory and on disk;
--- concurrent callers wait for the fetch already in flight
+-- full language list from the API, cached in memory and on disk
 local function get_languages()
     if lang_list then return lang_list end
-    if lang_waiters then
-        lang_waiters[#lang_waiters + 1] = coroutine.running()
-        coroutine.yield()
-        return lang_list
-    end
-    lang_waiters = {}
     local path = cache_path("languages.json")
     local parsed = read_json(path)
     if type(parsed) ~= "table" or #parsed == 0 then
@@ -415,9 +408,6 @@ local function get_languages()
         end)
         lang_list = parsed
     end
-    local waiting = lang_waiters
-    lang_waiters = nil
-    for _, co in ipairs(waiting) do resume(co) end
     return lang_list
 end
 
@@ -596,7 +586,6 @@ local function main(manual)
 
     local title, languages
     if manual then
-        run(get_languages)  -- warm the language list while the user types
         title = ask_title(default_title())
         if not title or title == "" then return end
         languages = ask_language()
@@ -605,12 +594,8 @@ local function main(manual)
 
     osd("searching…", 30)
     local cands, err = fetch_candidates(path, remote, title, languages)
-    if not cands then
-        osd(err, 5)
-        return
-    end
-    if #cands == 0 then
-        osd("no subtitles found", 4)
+    if not cands or #cands == 0 then
+        osd(err or "no subtitles found", 5)
         return
     end
     osd(#cands .. " result" .. (#cands == 1 and "" or "s"), 1)
@@ -619,18 +604,21 @@ end
 
 -- ---------------------------------------------------------------- auto mode
 
-local function has_sub_track()
+-- a real video (not audio with cover art, not an image) with no subs yet
+local function wants_subs()
+    local video = false
     for _, t in ipairs(mp.get_property_native("track-list") or {}) do
-        if t.type == "sub" then return true end
+        if t.type == "sub" then return false end
+        if t.type == "video" and not t.albumart and not t.image then video = true end
     end
-    return false
+    return video
 end
 
 mp.register_event("file-loaded", function()
     if not o.auto or o.api_key == "" then return end
     run(function()
         local path, remote = abs_video_path()
-        if not path or remote or has_sub_track() then return end
+        if not path or remote or not wants_subs() then return end
         local cands, err = fetch_candidates(path, false)
         if not cands then
             msg.warn("auto: " .. err)
