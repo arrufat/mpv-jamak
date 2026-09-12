@@ -57,8 +57,8 @@ Ranking: hash match, language priority, human before AI-translated
 (`[AI]`), matching frame rate, regular before hearing-impaired (`[HI]`,
 flip with `prefer_hi=yes`), download count. A hash match that contradicts
 the file name's episode code or the other hash matches is tagged `[HASH?]`
-and ranks below trusted ones. Rows show downloads and fps, with the
-video's fps appended on a mismatch. Downloads land next to the video as
+and ranks below trusted ones. The prompt shows the video's fps; a row
+shows its own only when it disagrees. Downloads land next to the video as
 `<video>.<lang>.srt` (or in `fallback_dir`) and load immediately.
 
 With `auto=yes`, a video without subtitle tracks gets a hands-free

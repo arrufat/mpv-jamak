@@ -471,11 +471,7 @@ local function pick(cands)
         local tags = ({ "[HASH?] ", "[HASH] " })[c.hash] or ""
         tags = tags .. "[" .. c.lang .. "]"
             .. (c.hi and " [HI]" or "") .. (c.ai and " [AI]" or "")
-        local stats = c.dl .. " dl"
-        if c.fps then
-            stats = stats .. string.format(", %sfps", fps2(c.fps))
-                .. (c.fps_mismatch and (", video " .. fps2(c.video_fps)) or "")
-        end
+        local stats = c.dl .. " dl" .. (c.fps_mismatch and (", " .. fps2(c.fps) .. "fps") or "")
         local names = c.release
         if feature_count > 1 and c.feature then
             names = c.plain_release and c.feature or c.feature .. " · " .. c.release
@@ -483,7 +479,8 @@ local function pick(cands)
         items[i] = tags .. " " .. stats .. " · " .. names
         msg.debug(items[i])
     end
-    local idx = choose("Subtitle:", items)
+    local vfps = cands[1].video_fps
+    local idx = choose(vfps and ("Subtitle (video " .. fps2(vfps) .. "fps):") or "Subtitle:", items)
     return idx and cands[idx]
 end
 
