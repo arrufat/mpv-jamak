@@ -14,7 +14,7 @@ by [OpenSubtitles.com](https://www.opensubtitles.com). Needs mpv 0.39+.
 * Moviehash matching, computed in Lua: subs for your exact file rank
   first, tagged `[HASH]`, with frame-rate cross-checks against the video.
 * Optional quota-aware auto mode that never spends a download on a guess
-  (a free account gets 10 per day).
+  (a free account gets 20 per day).
 * Async everywhere: network calls never block playback.
 
 ## Installation
