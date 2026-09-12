@@ -55,7 +55,7 @@ Rebindable via `script-binding jamak/jamak-search` and
 
 Ranking: hash match, language priority, human before AI-translated
 (`[AI]`), matching frame rate, download count. A row whose fps disagrees
-with the video shows both (`30fps, video 23.976`). Hearing-impaired subs
+with the video shows both (`30fps, video 23.98`). Hearing-impaired subs
 are tagged `[HI]`. A hash match whose episode code disagrees with the
 file name, or whose title differs from the one most hash matches share,
 is tagged `[HASH?]` and ranks below the trusted ones. Downloads land

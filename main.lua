@@ -324,16 +324,26 @@ end
 
 -- ---------------------------------------------------------- search & ranking
 
--- "Show (S01E11) Episode Title" or "Title (Year)", nil when unknown
+-- "Show S01E11" or "Title (Year)", nil when unknown
 local function feature_label(fd)
     if not fd.title then return nil end
     if fd.feature_type == "Episode" and fd.parent_title then
         local s, e = tonumber(fd.season_number), tonumber(fd.episode_number)
-        local code = s and e and string.format(" (S%02dE%02d)", s, e)
-            or e and string.format(" (E%02d)", e) or ""
-        return fd.parent_title .. code .. " " .. fd.title
+        local code = s and e and string.format(" S%02dE%02d", s, e)
+            or e and string.format(" E%02d", e) or ""
+        return fd.parent_title .. code
     end
     return fd.title .. (fd.year and (" (" .. fd.year .. ")") or "")
+end
+
+local function name_key(s)
+    return (s or ""):lower():gsub("[^%w]", "")
+end
+
+-- release names that merely repeat the title, with or without the year
+local function repeats_title(release, title, year)
+    local r, t = name_key(release), name_key(title)
+    return t ~= "" and (r == t or r == t .. (year or ""))
 end
 
 local function search(hash, title, languages, vfps, season, episode)
@@ -378,6 +388,8 @@ local function search(hash, title, languages, vfps, season, episode)
                 fps_mismatch = (vfps and fps and math.abs(fps - vfps) > 0.01) or false,
                 feature_id = fd.feature_id,
                 feature = feature_label(fd),
+                title = fd.title,
+                year = fd.year,
                 season = tonumber(fd.season_number),
                 episode = tonumber(fd.episode_number),
             }
@@ -453,6 +465,11 @@ local function choose(prompt, items)
     end)
 end
 
+-- 23.976 -> "23.98", 24 -> "24"
+local function fps2(f)
+    return string.format("%g", math.floor(f * 100 + 0.5) / 100)
+end
+
 local function pick(cands)
     -- prefix the resolved feature only when results span more than one
     local seen, feature_count = {}, 0
@@ -467,13 +484,17 @@ local function pick(cands)
         local tags = (c.hash_ok and "[HASH] " or c.hash_match and "[HASH?] " or "")
             .. "[" .. c.lang .. "]"
             .. (c.hi and " [HI]" or "") .. (c.ai and " [AI]" or "")
-        local feature = feature_count > 1 and c.feature and (c.feature .. ": ") or ""
-        local fps = ""
+        local stats = c.dl .. " dl"
         if c.fps then
-            fps = string.format(", %gfps", c.fps)
-                .. (c.fps_mismatch and string.format(", video %g", c.video_fps) or "")
+            stats = stats .. string.format(", %sfps", fps2(c.fps))
+                .. (c.fps_mismatch and (", video " .. fps2(c.video_fps)) or "")
         end
-        items[i] = string.format("%s %s%s (%d dl%s)", tags, feature, c.release, c.dl, fps)
+        local names = c.release
+        if feature_count > 1 and c.feature then
+            names = repeats_title(c.release, c.title, c.year) and c.feature
+                or c.feature .. " · " .. c.release
+        end
+        items[i] = tags .. " " .. stats .. " · " .. names
         msg.debug(items[i])
     end
     local idx = choose("Subtitle:", items)
