@@ -336,8 +336,10 @@ local function feature_label(fd, s, e)
     return fd.title .. (fd.year and (" (" .. fd.year .. ")") or "")
 end
 
+-- comparison key: no "the", no year, no punctuation
 local function name_key(s)
-    return (s:lower():gsub("[^%w]", ""))
+    return (s:lower():gsub("%f[%w]the%f[%W]", ""):gsub("%f[%w][12]%d%d%d%f[%W]", "")
+        :gsub("[^%w]", ""))
 end
 
 local function search(hash, title, languages, vfps, season, episode)
