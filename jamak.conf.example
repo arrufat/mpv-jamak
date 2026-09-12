@@ -19,6 +19,9 @@ languages=en,ko
 # hint that results exist (never spends download quota on a guess)
 auto=no
 
+# Rank hearing-impaired subtitles ([HI]) above regular ones (yes/no)
+prefer_hi=no
+
 # Where to save subtitles when the video's directory is unwritable
 # (empty = the jamak folder in mpv's cache directory, e.g. ~/.cache/mpv/jamak/subs)
 fallback_dir=

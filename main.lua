@@ -16,6 +16,7 @@ local o = {
     password = "",
     languages = "en,ko",
     auto = false,
+    prefer_hi = false,
     fallback_dir = "",
 }
 require("mp.options").read_options(o, "jamak")
@@ -315,7 +316,7 @@ local function guess_title(name)
     return t
 end
 
--- season and episode numbers from "S01E01" or "1x01" in a file name
+-- "S01E01" or "1x01" -> 1, 1
 local function parse_episode(name)
     local s, e = name:match("%f[%w][Ss](%d%d?%d?)[Ee](%d%d?%d?)%f[%W]")
     if not s then s, e = name:match("%f[%w](%d%d?)[Xx](%d%d?)%f[%W]") end
@@ -325,10 +326,9 @@ end
 -- ---------------------------------------------------------- search & ranking
 
 -- "Show S01E11" or "Title (Year)", nil when unknown
-local function feature_label(fd)
+local function feature_label(fd, s, e)
     if not fd.title then return nil end
     if fd.feature_type == "Episode" and fd.parent_title then
-        local s, e = tonumber(fd.season_number), tonumber(fd.episode_number)
         local code = s and e and string.format(" S%02dE%02d", s, e)
             or e and string.format(" E%02d", e) or ""
         return fd.parent_title .. code
@@ -337,13 +337,7 @@ local function feature_label(fd)
 end
 
 local function name_key(s)
-    return (s or ""):lower():gsub("[^%w]", "")
-end
-
--- release names that merely repeat the title, with or without the year
-local function repeats_title(release, title, year)
-    local r, t = name_key(release), name_key(title)
-    return t ~= "" and (r == t or r == t .. (year or ""))
+    return (s:lower():gsub("[^%w]", ""))
 end
 
 local function search(hash, title, languages, vfps, season, episode)
@@ -365,7 +359,9 @@ local function search(hash, title, languages, vfps, season, episode)
         return nil, api_error("search failed", resp)
     end
 
-    local cands = {}
+    -- hash: 0 none, 1 doubtful, 2 trusted (majority feature among matches
+    -- whose episode code fits the file name; uploaders mis-attach hashes)
+    local cands, votes = {}, {}
     for _, item in ipairs(resp.body.data) do
         local a = item.attributes or {}
         local f = a.files and a.files[1]
@@ -373,58 +369,49 @@ local function search(hash, title, languages, vfps, season, episode)
             local fd = a.feature_details or {}
             local fps = tonumber(a.fps)
             if fps and fps <= 0 then fps = nil end
+            local s, e = tonumber(fd.season_number), tonumber(fd.episode_number)
+            local hash = a.moviehash_match == true and 1 or 0
+            if hash > 0 and fd.feature_id
+                and not (season and s and e and (s ~= season or e ~= episode)) then
+                votes[fd.feature_id] = (votes[fd.feature_id] or 0) + 1
+            end
+            local release = a.release or f.file_name or "?"
+            local feature = feature_label(fd, s, e)
             cands[#cands + 1] = {
                 file_id = f.file_id,
                 file_name = f.file_name or "",
                 lang = (a.language or "?"):lower(),
-                release = a.release or f.file_name or "?",
+                release = release,
+                plain_release = feature ~= nil
+                    and name_key(feature):find(name_key(release), 1, true) ~= nil,
                 dl = a.download_count or 0,
-                hash_match = a.moviehash_match == true,
-                hash_ok = false,
+                hash = hash,
                 hi = a.hearing_impaired == true,
                 ai = a.ai_translated == true or a.machine_translated == true,
                 fps = fps,
                 video_fps = vfps,
                 fps_mismatch = (vfps and fps and math.abs(fps - vfps) > 0.01) or false,
                 feature_id = fd.feature_id,
-                feature = feature_label(fd),
-                title = fd.title,
-                year = fd.year,
-                season = tonumber(fd.season_number),
-                episode = tonumber(fd.episode_number),
+                feature = feature,
             }
         end
     end
-
-    -- hashes get mis-attached upstream: trust a match only when it fits the
-    -- file name's episode code and the feature most hash matches share
-    local votes, top, top_n, tie = {}, nil, 0, false
-    for _, c in ipairs(cands) do
-        if c.hash_match then
-            c.hash_ok = not (season and c.season and c.episode
-                and (c.season ~= season or c.episode ~= episode))
-            if c.hash_ok and c.feature_id then
-                local n = (votes[c.feature_id] or 0) + 1
-                votes[c.feature_id] = n
-                if n > top_n then top, top_n, tie = c.feature_id, n, false
-                elseif n == top_n then tie = true end
-            end
-        end
+    local top, top_n = nil, 0
+    for id, n in pairs(votes) do
+        if n > top_n then top, top_n = id, n elseif n == top_n then top = nil end
     end
     for _, c in ipairs(cands) do
-        if c.hash_ok and c.feature_id and (tie or c.feature_id ~= top) then
-            c.hash_ok = false
-        end
+        if c.hash > 0 and top and c.feature_id == top then c.hash = 2 end
     end
 
     -- auto mode downloads the first of these that is a trusted hash match
     table.sort(cands, function(x, y)
-        if x.hash_ok ~= y.hash_ok then return x.hash_ok end
-        if x.hash_match ~= y.hash_match then return x.hash_match end
+        if x.hash ~= y.hash then return x.hash > y.hash end
         local px, py = prio[x.lang] or 99, prio[y.lang] or 99
         if px ~= py then return px < py end
         if x.ai ~= y.ai then return y.ai end
         if x.fps_mismatch ~= y.fps_mismatch then return y.fps_mismatch end
+        if x.hi ~= y.hi then return x.hi == o.prefer_hi end
         return x.dl > y.dl
     end)
     msg.verbose(#cands .. " candidates")
@@ -467,7 +454,7 @@ end
 
 -- 23.976 -> "23.98", 24 -> "24"
 local function fps2(f)
-    return string.format("%g", math.floor(f * 100 + 0.5) / 100)
+    return (string.format("%.2f", f):gsub("%.?0+$", ""))
 end
 
 local function pick(cands)
@@ -481,8 +468,8 @@ local function pick(cands)
     end
     local items = {}
     for i, c in ipairs(cands) do
-        local tags = (c.hash_ok and "[HASH] " or c.hash_match and "[HASH?] " or "")
-            .. "[" .. c.lang .. "]"
+        local tags = ({ "[HASH?] ", "[HASH] " })[c.hash] or ""
+        tags = tags .. "[" .. c.lang .. "]"
             .. (c.hi and " [HI]" or "") .. (c.ai and " [AI]" or "")
         local stats = c.dl .. " dl"
         if c.fps then
@@ -491,8 +478,7 @@ local function pick(cands)
         end
         local names = c.release
         if feature_count > 1 and c.feature then
-            names = repeats_title(c.release, c.title, c.year) and c.feature
-                or c.feature .. " · " .. c.release
+            names = c.plain_release and c.feature or c.feature .. " · " .. c.release
         end
         items[i] = tags .. " " .. stats .. " · " .. names
         msg.debug(items[i])
@@ -613,9 +599,9 @@ local function fetch_candidates(path, remote, title, languages)
         if not h then msg.verbose("oshash: " .. herr) end
         state.hash = h or false
     end
-    local season, episode = parse_episode(mp.get_property("filename/no-ext") or "")
-    local cands, err = search(state.hash, title or default_title(), languages,
-        mp.get_property_native("container-fps"), season, episode)
+    local name = mp.get_property("filename/no-ext") or mp.get_property("media-title") or ""
+    local cands, err = search(state.hash, title or guess_title(name), languages,
+        mp.get_property_native("container-fps"), parse_episode(name))
     if cands and #cands > 0 then state.candidates = cands end
     return cands, err
 end
@@ -684,20 +670,17 @@ mp.register_event("file-loaded", function()
             msg.verbose("auto: no results")
             return
         end
-        -- spend quota only on a trusted hash match whose fps doesn't conflict
-        local best, why
+        local best
         for _, c in ipairs(cands) do
-            if c.hash_ok and not c.fps_mismatch then
+            if c.hash == 2 and not c.fps_mismatch then
                 best = c
                 break
-            end
-            if c.hash_match then
-                why = why or (c.hash_ok and "an fps mismatch" or "a doubtful title")
             end
         end
         if best then
             download(best, path, false)
-        elseif why then
+        elseif cands[1].hash > 0 then
+            local why = cands[1].hash == 2 and "an fps mismatch" or "a doubtful title"
             osd("hash match has " .. why .. ", press Ctrl+u to pick", 4)
         else
             osd(#cands .. " subs available, press Ctrl+u to pick", 4)

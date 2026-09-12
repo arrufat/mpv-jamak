@@ -54,18 +54,16 @@ Rebindable via `script-binding jamak/jamak-search` and
 `.../jamak-search-manual`.
 
 Ranking: hash match, language priority, human before AI-translated
-(`[AI]`), matching frame rate, download count. A row whose fps disagrees
-with the video shows both (`30fps, video 23.98`). Hearing-impaired subs
-are tagged `[HI]`. A hash match whose episode code disagrees with the
-file name, or whose title differs from the one most hash matches share,
-is tagged `[HASH?]` and ranks below the trusted ones. Downloads land
-next to the video as `<video>.<lang>.srt` (or in `fallback_dir`) and are
-selected immediately.
+(`[AI]`), matching frame rate, regular before hearing-impaired (`[HI]`,
+flip with `prefer_hi=yes`), download count. A hash match that contradicts
+the file name's episode code or the other hash matches is tagged `[HASH?]`
+and ranks below trusted ones. Rows show downloads and fps, with the
+video's fps appended on a mismatch. Downloads land next to the video as
+`<video>.<lang>.srt` (or in `fallback_dir`) and load immediately.
 
-With `auto=yes`, a video that loads without any subtitle track gets a
-hands-free download when a trusted hash match exists; otherwise jamak just
-hints that results are available, spending nothing. Files with subs
-(embedded or sibling `.srt`), audio files and images are skipped entirely.
+With `auto=yes`, a video without subtitle tracks gets a hands-free
+download when a trusted hash match exists; otherwise jamak only hints
+that results are available. Audio files and images are skipped.
 
 Debugging: `script-message jamak-hash` prints the file's moviehash;
 `--msg-level=jamak=v` logs queries and result counts.
