@@ -4,7 +4,7 @@ jamak (자막, Korean for "subtitles") is an interactive subtitle downloader
 for [mpv](https://mpv.io): plain Lua, `curl` as the only dependency, backed
 by [OpenSubtitles.com](https://www.opensubtitles.com). Needs mpv 0.39+.
 
-![jamak's subtitle picker over Sintel](https://github.com/arrufat/mpv-jamak/releases/download/0.3.1/screenshot.jpg)
+![jamak's subtitle picker over Sintel](https://github.com/arrufat/mpv-jamak/releases/download/0.4.7/screenshot.jpg)
 
 ## Features
 
