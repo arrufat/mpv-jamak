@@ -450,7 +450,10 @@ end
 -- returns the chosen 1-based index, nil on cancel
 local function choose(prompt, items)
     return await(function(cb)
-        input.select({ prompt = prompt, items = items, submit = cb })
+        local idx
+        input.select({ prompt = prompt, items = items,
+                       submit = function(i) idx = i end,
+                       closed = function() mp.add_timeout(0, function() cb(idx) end) end })
     end)
 end
 
@@ -488,18 +491,12 @@ end
 
 local function ask_title(default)
     return await(function(cb)
-        local done = false
+        local text
         input.get({
             prompt = "Search subtitles:",
             default_text = default,
-            submit = function(text)
-                done = true
-                input.terminate()
-                cb(text)
-            end,
-            closed = function()
-                if not done then cb(nil) end
-            end,
+            submit = function(t) text = t end,
+            closed = function() mp.add_timeout(0, function() cb(text) end) end,
         })
     end)
 end
