@@ -3,7 +3,8 @@
 -- Keys:  Ctrl+u  search, or reopen cached results
 --        Ctrl+U  manual search: title prompt, then language picker
 --
--- Credentials go in script-opts/jamak.conf (see jamak.conf.example).
+-- Credentials come from OPENSUBTITLES_API_KEY / _USERNAME / _PASSWORD in the
+-- environment, falling back to script-opts/jamak.conf (see jamak.conf.example).
 
 local mp = require "mp"
 local utils = require "mp.utils"
@@ -20,6 +21,12 @@ local o = {
     fallback_dir = "",
 }
 require("mp.options").read_options(o, "jamak")
+
+-- environment overrides the config file, per key
+for _, key in ipairs({ "api_key", "username", "password" }) do
+    local v = os.getenv("OPENSUBTITLES_" .. key:upper())
+    if v and v ~= "" then o[key] = v end
+end
 
 local API = "https://api.opensubtitles.com/api/v1"
 local UA = "jamak v0.1"
@@ -609,7 +616,7 @@ end
 
 local function main(manual)
     if o.api_key == "" then
-        osd("no api_key, copy jamak.conf.example to script-opts/jamak.conf", 6)
+        osd("no api_key: set OPENSUBTITLES_API_KEY or copy jamak.conf.example to script-opts/jamak.conf", 6)
         return
     end
     local path, remote = abs_video_path()

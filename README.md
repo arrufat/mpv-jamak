@@ -31,10 +31,12 @@ or as a dotfiles submodule. Keep the directory name `jamak`, or your
 1. Create a free [opensubtitles.com](https://www.opensubtitles.com) account
    and register an API consumer at
    [opensubtitles.com/consumers](https://www.opensubtitles.com/consumers).
-2. Copy [`jamak.conf.example`](jamak.conf.example) to
-   `~/.config/mpv/script-opts/jamak.conf` and fill in the key and your
-   credentials. They are stored in plain text; keep the file out of public
-   dotfiles.
+2. Export `OPENSUBTITLES_API_KEY`, `OPENSUBTITLES_USERNAME` and
+   `OPENSUBTITLES_PASSWORD` in your environment, or copy
+   [`jamak.conf.example`](jamak.conf.example) to
+   `~/.config/mpv/script-opts/jamak.conf` and fill them in there. Environment
+   variables win over the config file, key by key. The file is plain text;
+   keep it out of public dotfiles.
 
 Recommended in `mpv.conf`, so downloaded subtitles auto-load on replay:
 
