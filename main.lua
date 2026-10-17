@@ -219,7 +219,7 @@ end
 
 local function login()
     if o.username == "" or o.password == "" then
-        return nil, "no credentials, fill in script-opts/jamak.conf"
+        return nil, "no credentials: set OPENSUBTITLES_USERNAME/_PASSWORD or fill in script-opts/jamak.conf"
     end
     local resp, err = api_request({
         method = "POST",
@@ -227,7 +227,7 @@ local function login()
         body = utils.format_json({ username = o.username, password = o.password }),
     })
     if not resp then return nil, err end
-    if resp.code == 401 then return nil, "bad credentials (check script-opts/jamak.conf)" end
+    if resp.code == 401 then return nil, "bad credentials (check OPENSUBTITLES_* env vars or script-opts/jamak.conf)" end
     if resp.code ~= 200 or not resp.body or not resp.body.token then
         return nil, api_error("login failed", resp)
     end
