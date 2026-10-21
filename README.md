@@ -14,7 +14,7 @@ by [OpenSubtitles.com](https://www.opensubtitles.com). Needs mpv 0.39+.
 * Moviehash matching, computed in Lua: subs for your exact file rank
   first, tagged `[HASH]`, with frame-rate cross-checks against the video.
 * Optional quota-aware auto mode that never spends a download on a guess
-  (a free account gets 20 per day).
+  (5 per day without an account, 20 with a free one).
 * Async everywhere: network calls never block playback.
 
 ## Installation
@@ -28,15 +28,19 @@ or as a dotfiles submodule. Keep the directory name `jamak`, or your
 
 ## Configuration
 
-1. Create a free [opensubtitles.com](https://www.opensubtitles.com) account
-   and register an API consumer at
-   [opensubtitles.com/consumers](https://www.opensubtitles.com/consumers).
-2. Export `OPENSUBTITLES_API_KEY`, `OPENSUBTITLES_USERNAME` and
-   `OPENSUBTITLES_PASSWORD` in your environment, or copy
-   [`jamak.conf.example`](jamak.conf.example) to
+jamak works out of the box with no configuration. OpenSubtitles then counts
+downloads anonymously, 5 per day per IP address. To get 20 a day:
+
+1. Create a free [opensubtitles.com](https://www.opensubtitles.com) account.
+2. Export `OPENSUBTITLES_USERNAME` and `OPENSUBTITLES_PASSWORD` in your
+   environment, or copy [`jamak.conf.example`](jamak.conf.example) to
    `~/.config/mpv/script-opts/jamak.conf` and fill them in there. Environment
    variables win over the config file, key by key. The file is plain text;
    keep it out of public dotfiles.
+
+jamak ships its own API key. To use your own instead, register a consumer
+at [opensubtitles.com/consumers](https://www.opensubtitles.com/consumers)
+and set `OPENSUBTITLES_API_KEY` (or `api_key`).
 
 Recommended in `mpv.conf`, so downloaded subtitles auto-load on replay:
 

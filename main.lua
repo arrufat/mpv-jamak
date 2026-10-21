@@ -28,8 +28,12 @@ for _, key in ipairs({ "api_key", "username", "password" }) do
     if v and v ~= "" then o[key] = v end
 end
 
+-- jamak's own consumer key, used when the user hasn't registered one
+local DEFAULT_API_KEY = "GV1ktUKhBdprTclKIiJXsCbWxwh8S0mx"
+if o.api_key == "" then o.api_key = DEFAULT_API_KEY end
+
 local API = "https://api.opensubtitles.com/api/v1"
-local UA = "jamak v0.1"
+local UA = "jamak v0.6.0"
 local TOKEN_MAX_AGE = 20 * 3600
 local PLATFORM = mp.get_property_native("platform") or "linux"
 
@@ -219,7 +223,7 @@ end
 
 local function login()
     if o.username == "" or o.password == "" then
-        return nil, "no credentials: set OPENSUBTITLES_USERNAME/_PASSWORD or fill in script-opts/jamak.conf"
+        return nil, "incomplete credentials: set both OPENSUBTITLES_USERNAME and _PASSWORD, or neither"
     end
     local resp, err = api_request({
         method = "POST",
@@ -237,8 +241,12 @@ local function login()
     return session
 end
 
--- req = {path, method?, body?}; retries once with a fresh login on 401
+-- req = {path, method?, body?}; retries once with a fresh login on 401.
+-- Without an account the request goes out anonymously (quota counted per IP)
 local function authed_request(req)
+    if o.username == "" and o.password == "" then
+        return api_request({ method = req.method, url = API .. req.path, body = req.body })
+    end
     local s, err = cached_session()
     if not s then s, err = login() end
     for _ = 1, 2 do
@@ -615,10 +623,6 @@ local function pick_and_download(cands, path, remote)
 end
 
 local function main(manual)
-    if o.api_key == "" then
-        osd("no api_key: set OPENSUBTITLES_API_KEY or copy jamak.conf.example to script-opts/jamak.conf", 6)
-        return
-    end
     local path, remote = abs_video_path()
     if not path then
         osd("no file playing")
@@ -660,7 +664,7 @@ local function wants_subs()
 end
 
 mp.register_event("file-loaded", function()
-    if not o.auto or o.api_key == "" then return end
+    if not o.auto then return end
     run(function()
         local path, remote = abs_video_path()
         if not path or remote or not wants_subs() then return end

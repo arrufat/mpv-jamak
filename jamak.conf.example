@@ -1,17 +1,20 @@
 # jamak configuration — copy this file to your mpv config dir as
-# script-opts/jamak.conf and fill in your credentials.
+# script-opts/jamak.conf. Everything is optional.
 #
-# Get an API key: create an account at https://www.opensubtitles.com, then
-# register a consumer at https://www.opensubtitles.com/consumers
+# Without an account, downloads are anonymous (5 per day per IP). A free
+# account at https://www.opensubtitles.com raises that to 20.
 #
 # NOTE: credentials are stored in plain text (mpv has no secret store).
 # Keep this file out of any public dotfiles repo. Alternatively export
 # OPENSUBTITLES_API_KEY, OPENSUBTITLES_USERNAME and OPENSUBTITLES_PASSWORD;
 # environment variables override the values below.
 
-api_key=YOUR_API_KEY
-username=YOUR_USERNAME
-password=YOUR_PASSWORD
+username=
+password=
+
+# Your own API key (https://www.opensubtitles.com/consumers); empty uses
+# the key bundled with jamak
+api_key=
 
 # Comma-separated 2-letter language codes, in priority order for ranking
 languages=en,ko
